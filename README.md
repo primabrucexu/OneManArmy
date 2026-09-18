@@ -6,15 +6,21 @@
 
 ## 运行 Demo
 
-需要 Python 3.10 或更高版本，并已在本机登录 Codex。
+需要 Node.js 18 或更高版本，并已在本机登录 Codex。
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m onemanarmy
+npm install
+npm run build
+npm start
 ```
 
-然后访问 `http://127.0.0.1:8765`，填写目标项目、任务和文件权限，即可启动一次真实 Codex 任务。当前 Demo 只验证 Web UI 到 Codex 的完整调用链路，尚未实现下文所述的三阶段流程和审核角色。
+然后访问 `http://127.0.0.1:8765`，填写目标项目、任务和文件权限，即可启动一次真实 Codex 任务。当前 Demo 由仅监听本机的 Node.js 服务托管页面并调用 Codex，不需要远程后端。它只验证 Web UI 到 Codex 的完整调用链路，尚未实现下文所述的三阶段流程和审核角色。
+
+运行自动测试：
+
+```powershell
+npm test
+```
 
 ## 项目目标
 

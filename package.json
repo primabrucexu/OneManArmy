@@ -1,0 +1,23 @@
+{
+  "name": "one-man-army",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local Codex-powered software delivery workspace.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "dev": "npm run build && npm start",
+    "start": "node dist/server/main.js",
+    "test": "tsc -p tsconfig.test.json && node --test --test-isolation=none dist-test/tests/*.test.js"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "^0.155.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "typescript": "^7.0.2"
+  }
+}

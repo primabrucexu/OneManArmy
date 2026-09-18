@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OneManArmy</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">CODEX WORKSPACE</p>
+          <h1>OneManArmy</h1>
+          <p class="subtitle">把一个明确目标交给 Codex，先跑通真实调用。</p>
+        </div>
+        <div class="connection" aria-live="polite">
+          <span class="connection-dot"></span>
+          <span>Local demo</span>
+        </div>
+      </header>
+
+      <section class="workspace-grid">
+        <form id="run-form" class="panel composer">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">NEW RUN</p>
+              <h2>启动 Codex</h2>
+            </div>
+            <span id="status-badge" class="status-badge" data-state="idle">待命</span>
+          </div>
+
+          <label for="project-path">项目目录</label>
+          <input
+            id="project-path"
+            name="project_path"
+            type="text"
+            autocomplete="off"
+            required
+            placeholder="C:\\path\\to\\project"
+          />
+
+          <label for="prompt">交给 Codex 的任务</label>
+          <textarea
+            id="prompt"
+            name="prompt"
+            rows="9"
+            required
+            placeholder="例如：阅读 README，并用三点概括这个项目。"
+          ></textarea>
+
+          <fieldset>
+            <legend>文件权限</legend>
+            <div class="mode-options">
+              <label class="mode-card">
+                <input type="radio" name="sandbox" value="read_only" checked />
+                <span>
+                  <strong>只读</strong>
+                  <small>Codex 可以检查项目，但不能修改文件。</small>
+                </span>
+              </label>
+              <label class="mode-card">
+                <input type="radio" name="sandbox" value="workspace_write" />
+                <span>
+                  <strong>允许修改</strong>
+                  <small>Codex 可以在项目工作区内写入文件。</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <p id="write-warning" class="warning" hidden>
+            允许修改会把提示词作为真实开发任务交给 Codex。
+          </p>
+
+          <button id="run-button" class="primary-button" type="submit">
+            <span>运行 Codex</span>
+            <span aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <section class="panel result-panel" aria-live="polite">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">RESULT</p>
+              <h2>执行结果</h2>
+            </div>
+          </div>
+
+          <div id="empty-state" class="empty-state">
+            <div class="empty-mark">OMA</div>
+            <p>结果会显示在这里。</p>
+            <small>首次真实调用可能需要一些时间。</small>
+          </div>
+
+          <div id="result-state" hidden>
+            <dl class="run-meta">
+              <div>
+                <dt>Thread</dt>
+                <dd id="thread-id">—</dd>
+              </div>
+              <div>
+                <dt>Mode</dt>
+                <dd id="result-mode">—</dd>
+              </div>
+            </dl>
+            <pre id="response-output"></pre>
+          </div>
+
+          <div id="error-state" class="error-state" hidden>
+            <strong>运行失败</strong>
+            <p id="error-message"></p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

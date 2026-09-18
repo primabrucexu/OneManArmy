@@ -2,7 +2,19 @@
 
 一个人提出软件需求，由一支可观察、可打断、可纠偏的 Codex Agent 团队完成交付。
 
-> 当前状态：总体目标已确认，具体功能待设计。
+> 当前状态：总体目标已确认，已完成可直接调用 Codex 的本地 Web Demo。
+
+## 运行 Demo
+
+需要 Python 3.10 或更高版本，并已在本机登录 Codex。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m onemanarmy
+```
+
+然后访问 `http://127.0.0.1:8765`，填写目标项目、任务和文件权限，即可启动一次真实 Codex 任务。当前 Demo 只验证 Web UI 到 Codex 的完整调用链路，尚未实现下文所述的三阶段流程和审核角色。
 
 ## 项目目标
 

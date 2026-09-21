@@ -2,24 +2,15 @@
   "name": "one-man-army",
   "version": "0.1.0",
   "private": true,
-  "description": "A local Codex-powered software delivery workspace.",
+  "description": "A Codex-native autonomous software delivery skill suite.",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
-    "dev": "npm run build && npm start",
-    "start": "node dist/server/main.js",
-    "test": "tsc -p tsconfig.test.json && node --test --test-isolation=none dist-test/tests/*.test.js"
+    "test": "node --test .agents/skills/oma-delivery/scripts/runner.test.mjs"
   },
   "dependencies": {
-    "@openai/codex": "^0.155.0",
-    "@openai/codex-sdk": "^0.155.0",
-    "@phosphor-icons/web": "^2.1.2"
-  },
-  "devDependencies": {
-    "@types/node": "^26.6.1",
-    "typescript": "^7.0.2"
+    "@openai/codex": "^0.155.0"
   }
 }

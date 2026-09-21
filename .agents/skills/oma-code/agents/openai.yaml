@@ -1,0 +1,4 @@
+interface:
+  display_name: "OMA Code"
+  short_description: "Implement a reviewed plan in an isolated validation workspace."
+  default_prompt: "Use $oma-code to implement the reviewed delivery plan."

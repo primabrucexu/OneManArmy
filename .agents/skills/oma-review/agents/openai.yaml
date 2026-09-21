@@ -1,0 +1,4 @@
+interface:
+  display_name: "OMA Review"
+  short_description: "Independently review a delivery artifact and return a verdict."
+  default_prompt: "Use $oma-review to review the supplied delivery artifact."

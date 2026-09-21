@@ -1,0 +1,4 @@
+interface:
+  display_name: "OMA Plan"
+  short_description: "Produce or revise a delivery plan for a confirmed requirement."
+  default_prompt: "Use $oma-plan to create a delivery plan from the confirmed requirement."

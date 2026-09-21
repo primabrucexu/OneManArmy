@@ -14,7 +14,9 @@
     "test": "tsc -p tsconfig.test.json && node --test --test-isolation=none dist-test/tests/*.test.js"
   },
   "dependencies": {
-    "@openai/codex-sdk": "^0.155.0"
+    "@openai/codex": "^0.155.0",
+    "@openai/codex-sdk": "^0.155.0",
+    "@phosphor-icons/web": "^2.1.2"
   },
   "devDependencies": {
     "@types/node": "^26.6.1",

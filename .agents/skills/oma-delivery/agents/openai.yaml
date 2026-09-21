@@ -1,4 +1,4 @@
 interface:
   display_name: "OMA Delivery"
-  short_description: "Run an autonomous delivery workflow across specialist skills."
-  default_prompt: "Use $oma-delivery to execute the confirmed requirement autonomously."
+  short_description: "Discuss, persist, and deliver a software requirement."
+  default_prompt: "Use $oma-delivery to start or continue this software requirement."

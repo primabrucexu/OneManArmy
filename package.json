@@ -8,7 +8,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test .agents/skills/oma-delivery/scripts/runner.test.mjs"
+    "test": "node --test .agents/skills/oma-discuss/scripts/discuss.test.mjs .agents/skills/oma-delivery/scripts/runner.test.mjs"
   },
   "dependencies": {
     "@openai/codex": "^0.155.0"

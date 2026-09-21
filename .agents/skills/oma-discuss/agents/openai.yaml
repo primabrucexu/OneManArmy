@@ -1,0 +1,6 @@
+interface:
+  display_name: "OMA Discuss"
+  short_description: "Persist an interactive software requirement discussion."
+  default_prompt: "Use $oma-discuss to continue an interactive requirement discussion."
+policy:
+  allow_implicit_invocation: false

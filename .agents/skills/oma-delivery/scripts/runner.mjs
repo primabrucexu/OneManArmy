@@ -61,13 +61,14 @@ async function readState(statePath) {
   }
 }
 
-function initialState(requirement, workspace) {
+function initialState(requirement, workspace, requirementFile = null) {
   const now = new Date().toISOString();
   return {
     version: 1,
     status: "running",
     stage: "plan",
     requirement,
+    requirementFile: requirementFile ? path.resolve(requirementFile) : null,
     workspace,
     planAttempt: 1,
     codeAttempt: 1,
@@ -79,6 +80,20 @@ function initialState(requirement, workspace) {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+export async function loadRequirementInput({ requirement, requirementFile }) {
+  if (Boolean(requirement) === Boolean(requirementFile)) {
+    throw new Error("Provide exactly one of --requirement or --requirement-file.");
+  }
+  if (requirementFile) {
+    const resolved = path.resolve(requirementFile);
+    const content = await readFile(resolved, "utf8");
+    if (!content.trim()) throw new Error("Confirmed requirement file is empty.");
+    return { requirement: content.trim(), requirementFile: resolved };
+  }
+  if (!requirement.trim()) throw new Error("Confirmed requirement is empty.");
+  return { requirement: requirement.trim(), requirementFile: null };
 }
 
 function stageSkill(stage) {
@@ -381,6 +396,7 @@ export async function runWorkflow({
   runDir,
   workspace,
   requirement,
+  requirementFile = null,
   adapter,
   maxStages = Infinity,
   maxRevisions = 2,
@@ -388,10 +404,11 @@ export async function runWorkflow({
   const statePath = path.join(runDir, "state.json");
   let state = await readState(statePath);
   if (!state) {
-    state = initialState(requirement, workspace);
+    state = initialState(requirement, workspace, requirementFile);
     await writeJsonAtomic(statePath, state);
   } else if (
     state.requirement !== requirement
+    || (state.requirementFile ?? null) !== (requirementFile ? path.resolve(requirementFile) : null)
     || path.resolve(state.workspace) !== path.resolve(workspace)
   ) {
     throw new Error("Existing run state does not match the supplied requirement and workspace.");
@@ -427,15 +444,17 @@ async function main() {
   const repoRoot = path.resolve(SCRIPT_DIR, "..", "..", "..", "..");
   const runDir = requiredPath(values, "run-dir");
   const workspace = requiredPath(values, "workspace");
-  const requirement = values.requirement;
-  if (!requirement) throw new Error("Missing --requirement");
+  const requirementInput = await loadRequirementInput({
+    requirement: values.requirement,
+    requirementFile: values["requirement-file"],
+  });
   const adapter = new AppServerAdapter({ repoRoot, workspace });
   try {
     if (adapter.start) await adapter.start();
     const state = await runWorkflow({
       runDir,
       workspace,
-      requirement,
+      ...requirementInput,
       adapter,
       maxRevisions: values["max-revisions"] ? Number(values["max-revisions"]) : 2,
     });

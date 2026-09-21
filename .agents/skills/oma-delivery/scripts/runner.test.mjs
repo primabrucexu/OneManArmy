@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runWorkflow } from "./runner.mjs";
+import { loadRequirementInput, runWorkflow } from "./runner.mjs";
 
 class FakeAdapter {
   constructor(scenario = "happy") {
@@ -126,4 +126,18 @@ test("unrecoverable review reaches failed without user input", async (t) => {
   assert.equal(state.stage, "failed");
   assert.equal(state.trace.at(-1).status, "failed");
   assert.match(state.feedback, /contradictory/i);
+});
+
+test("loads the frozen requirement artifact used by discussion handoff", async (t) => {
+  const dirs = await directories(t);
+  const requirementFile = path.join(dirs.runDir, "requirement.md");
+  await mkdir(dirs.runDir, { recursive: true });
+  await writeFile(requirementFile, "# Confirmed Requirement\n\nDeliver it.\n", "utf8");
+  const input = await loadRequirementInput({ requirementFile });
+  assert.equal(input.requirement, "# Confirmed Requirement\n\nDeliver it.");
+  assert.equal(input.requirementFile, path.resolve(requirementFile));
+  await assert.rejects(
+    loadRequirementInput({ requirement: "duplicate", requirementFile }),
+    /exactly one/,
+  );
 });

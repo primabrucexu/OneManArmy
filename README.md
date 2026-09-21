@@ -18,24 +18,59 @@ Skill + Runner 架构已经完成真实可行性验证：
 
 当前实现是经过验证的架构基线，还不是完整生产版本。超时、进程异常、取消、重试分类、权限契约和真实大型仓库交付仍需继续完善。
 
-## 使用方式
+## 安装与验证
 
 需要 Node.js 18 或更高版本，并已在本机登录 Codex。
+
+克隆仓库后，先安装依赖并运行测试：
 
 ```powershell
 npm install
 npm test
 ```
 
-在 Codex 中打开目标软件项目后，从第一句需求想法开始调用：
+在本仓库中启动 Codex 时，Codex 会直接发现 `.agents/skills/` 下的仓库级 Skills，不需要额外安装。
+
+如果要在任意软件项目中使用 OneManArmy，请在 Codex 中调用 `$skill-installer`，从本仓库一次安装以下五个 Skill：
+
+```text
+$skill-installer 请从 https://github.com/primabrucexu/OneManArmy 安装 .agents/skills 下的 oma-delivery、oma-discuss、oma-plan、oma-code 和 oma-review
+```
+
+五个 Skill 必须一起安装；只安装 `$oma-delivery` 会缺少讨论、规划、编码或审核阶段。Codex 通常会自动发现新安装的 Skill；如果技能列表没有刷新，重启 Codex。安装与发现机制参见 [OpenAI Skills 文档](https://learn.chatgpt.com/docs/build-skills)。
+
+## 日常使用
+
+在 Codex 中打开要开发的目标项目，从第一句需求想法开始调用：
 
 ```text
 $oma-delivery 我想讨论并实现一个需求……
 ```
 
-之后正常继续对话即可。讨论状态保存在目标项目的 `.oma/runs/<requirement-id>/`，不依赖聊天窗口保留全部上下文。`$oma-delivery` 是唯一正式入口；用户不需要手动调用阶段 Skills。
+之后像普通对话一样逐步补充目标、范围、非目标、验收标准和约束，不需要一次写完，也不需要手动调用 `$oma-discuss`：
 
-当目标、范围、非目标、验收标准、执行授权和必要决策规则已经明确时，用户明确确认需求。确认前不会进入规划或修改产品代码；确认后需求被冻结，Runner 启动且不再把实现决策转交给用户。
+```text
+先解决批量导入，导出这次不做。
+重复数据怎么处理还没决定，我们继续讨论这个。
+```
+
+讨论中断后，重新调用 `$oma-delivery` 即可继续。只有一个未完成讨论时会自动恢复；同时存在多个讨论时，它会根据保存的标题让用户选择，不会猜测。
+
+确认需求前，可以随时修改或排除之前提出的内容。准备进入自动交付时，明确确认当前需求：
+
+```text
+确认，按当前需求执行。
+```
+
+确认前不会进入规划或修改产品代码；确认后需求被冻结，Runner 自动完成规划、独立审核、编码、返工和最终验收，不再把实现过程中的中间决策交回用户。`$oma-delivery` 是唯一正式入口，其他四个阶段 Skill 由流程内部调用。
+
+讨论和执行状态保存在目标项目的 `.oma/runs/<requirement-id>/`，不依赖聊天窗口保留全部上下文：
+
+- `discussion-state.json`：讨论状态和标题。
+- `discussion.jsonl`：逐轮保存的完整讨论历史。
+- `requirement-draft.md`：随讨论更新的当前需求草稿。
+- `requirement.md`：用户确认后冻结的正式需求。
+- `state.json`：自动交付阶段、返工轨迹和最终状态。
 
 ## 正式架构
 

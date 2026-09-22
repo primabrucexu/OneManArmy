@@ -13,6 +13,8 @@ const SCRIPT_DIR = path.dirname(MODULE_PATH);
 const SKILLS_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 const STAGES = ["plan", "plan_review", "code", "code_review"];
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+const DEFAULT_STAGE_TIMEOUT_MS = 30 * 60 * 1000;
+const INTERRUPT_TIMEOUT_MS = 10 * 1000;
 const OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -43,6 +45,81 @@ function requiredPath(values, key) {
   const value = values[key];
   if (!value) throw new Error(`Missing --${key}`);
   return path.resolve(value);
+}
+
+function positiveInteger(values, key, fallback) {
+  if (values[key] === undefined) return fallback;
+  const value = Number(values[key]);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`--${key} must be a positive integer.`);
+  }
+  return value;
+}
+
+function booleanValue(values, key, fallback = false) {
+  if (values[key] === undefined) return fallback;
+  if (values[key] === "true") return true;
+  if (values[key] === "false") return false;
+  throw new Error(`--${key} must be true or false.`);
+}
+
+export function findNearestLocalCodex(startDirectory) {
+  let current = path.resolve(startDirectory);
+  while (true) {
+    const candidate = path.join(current, "node_modules", "@openai", "codex", "bin", "codex.js");
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function infrastructureFailure(error, stage) {
+  const message = error?.message ?? String(error);
+  let kind = "infrastructure_error";
+  if (error?.code === "OMA_STAGE_TIMEOUT") kind = "stage_timeout";
+  else if (/requires a newer version of Codex/i.test(message)) kind = "runtime_incompatible";
+  else if (/spawn EPERM/i.test(message)) kind = "runtime_spawn_failed";
+  return {
+    kind,
+    recoverable: true,
+    stage,
+    message,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function recoverableFailure(state) {
+  if (state.failure?.recoverable && STAGES.includes(state.failure.stage)) {
+    return state.failure;
+  }
+  const legacyTimeout = [...(state.trace ?? [])].reverse().find(
+    (item) => item.reason === "runner_timeout" && STAGES.includes(item.stage),
+  );
+  if (!legacyTimeout) return null;
+  return {
+    kind: "stage_timeout",
+    recoverable: true,
+    stage: legacyTimeout.stage,
+    message: state.feedback ?? "Legacy Runner timeout.",
+  };
+}
+
+async function persistInfrastructureFailure(state, statePath, error, stage) {
+  const failure = infrastructureFailure(error, stage);
+  state.trace.push({
+    sequence: state.trace.length + 1,
+    stage,
+    skill: stageSkill(stage),
+    status: "failed",
+    failureKind: failure.kind,
+  });
+  state.status = "failed";
+  state.stage = "failed";
+  state.feedback = failure.message;
+  state.failure = failure;
+  state.updatedAt = failure.timestamp;
+  await writeJsonAtomic(statePath, state);
 }
 
 async function writeJsonAtomic(filePath, value) {
@@ -116,19 +193,23 @@ function makePrompt(state) {
   return `${shared}\n\nIndependently inspect the workspace and review this implementation report:\n${state.implementation?.summary ?? "<missing>"}\nReturn only the requested JSON object.`;
 }
 
-class AppServerClient {
-  constructor() {
+export class AppServerClient {
+  constructor({ codexJs = null } = {}) {
     this.nextId = 1;
     this.pending = new Map();
     this.events = [];
     this.waiters = [];
     this.stderr = "";
+    this.codexJs = codexJs ? path.resolve(codexJs) : null;
+    this.runtime = null;
   }
 
   async start() {
-    const repoRoot = path.resolve(SCRIPT_DIR, "..", "..", "..", "..");
-    const localCodex = path.join(repoRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
-    const useLocalCodex = existsSync(localCodex);
+    const localCodex = this.codexJs ?? findNearestLocalCodex(SCRIPT_DIR);
+    if (this.codexJs && !existsSync(this.codexJs)) {
+      throw new Error(`Configured Codex JavaScript entry does not exist: ${this.codexJs}`);
+    }
+    const useLocalCodex = Boolean(localCodex);
     const command = useLocalCodex
       ? process.execPath
       : process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "codex";
@@ -137,6 +218,7 @@ class AppServerClient {
       : process.platform === "win32"
         ? ["/d", "/s", "/c", "codex app-server --stdio"]
         : ["app-server", "--stdio"];
+    this.runtime = useLocalCodex ? localCodex : "codex from PATH";
     this.child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.child.stderr.setEncoding("utf8");
     this.child.stderr.on("data", (chunk) => { this.stderr += chunk; });
@@ -144,6 +226,7 @@ class AppServerClient {
       const error = new Error(`App Server exited with code ${code}. ${this.stderr}`);
       this.failAll(error);
     });
+    this.child.on("error", (error) => this.failAll(error));
     const lines = readline.createInterface({ input: this.child.stdout });
     lines.on("line", (line) => {
       if (!line.trim()) return;
@@ -165,6 +248,7 @@ class AppServerClient {
       const pending = this.pending.get(String(message.id));
       if (!pending) return;
       this.pending.delete(String(message.id));
+      if (pending.timer) clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(JSON.stringify(message.error)));
       else pending.resolve(message.result);
       return;
@@ -190,9 +274,15 @@ class AppServerClient {
   }
 
   failAll(error) {
-    for (const pending of this.pending.values()) pending.reject(error);
+    for (const pending of this.pending.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(error);
+    }
     this.pending.clear();
-    for (const waiter of this.waiters) waiter.reject(error);
+    for (const waiter of this.waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
     this.waiters.length = 0;
   }
 
@@ -200,10 +290,17 @@ class AppServerClient {
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
-  request(method, params) {
+  request(method, params, timeoutMs = null) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(String(id), { resolve, reject });
+      const pending = { resolve, reject, timer: null };
+      if (timeoutMs !== null) {
+        pending.timer = setTimeout(() => {
+          this.pending.delete(String(id));
+          reject(new Error(`Timed out waiting for response to ${method}.`));
+        }, timeoutMs);
+      }
+      this.pending.set(String(id), pending);
       this.send({ id, method, params });
     });
   }
@@ -212,7 +309,7 @@ class AppServerClient {
     this.send(params === undefined ? { method } : { method, params });
   }
 
-  waitFor(method, predicate, fromIndex, timeoutMs = 180000) {
+  waitFor(method, predicate, fromIndex, timeoutMs = DEFAULT_STAGE_TIMEOUT_MS) {
     const existing = this.events.slice(fromIndex).find(
       (event) => event.method === method && predicate(event.params),
     );
@@ -221,7 +318,9 @@ class AppServerClient {
       const waiter = { method, predicate, resolve, reject, timer: null };
       waiter.timer = setTimeout(() => {
         this.waiters.splice(this.waiters.indexOf(waiter), 1);
-        reject(new Error(`Timed out waiting for ${method}. ${this.stderr}`));
+        const error = new Error(`Timed out waiting for ${method}. ${this.stderr}`);
+        error.code = "OMA_STAGE_TIMEOUT";
+        reject(error);
       }, timeoutMs);
       this.waiters.push(waiter);
     });
@@ -244,23 +343,24 @@ class AppServerClient {
 }
 
 export class AppServerAdapter {
-  constructor({ repoRoot, workspace }) {
-    this.repoRoot = repoRoot;
+  constructor({ workspace, stageTimeoutMs = DEFAULT_STAGE_TIMEOUT_MS, codexJs = null, client = null }) {
     this.workspace = workspace;
-    this.client = new AppServerClient();
+    this.stageTimeoutMs = stageTimeoutMs;
+    this.client = client ?? new AppServerClient({ codexJs });
   }
 
   async start() {
     await this.client.start();
+    process.stderr.write(`OMA Runner Codex runtime: ${this.client.runtime}\n`);
   }
 
   async discover() {
     const response = await this.client.request("skills/list", {
-      cwds: [this.repoRoot],
+      cwds: [this.workspace],
       forceReload: true,
     });
     const entry = response.data.find(
-      (candidate) => path.resolve(candidate.cwd) === path.resolve(this.repoRoot),
+      (candidate) => path.resolve(candidate.cwd) === path.resolve(this.workspace),
     ) ?? response.data[0];
     if (entry?.errors?.length) {
       throw new Error(`Skill discovery failed: ${JSON.stringify(entry.errors)}`);
@@ -294,11 +394,28 @@ export class AppServerAdapter {
       cwd: this.workspace,
     });
     const turnId = turnResponse.turn.id;
-    const completed = await this.client.waitFor(
-      "turn/completed",
-      (params) => params.threadId === threadId && params.turn.id === turnId,
-      eventIndex,
-    );
+    let completed;
+    try {
+      completed = await this.client.waitFor(
+        "turn/completed",
+        (params) => params.threadId === threadId && params.turn.id === turnId,
+        eventIndex,
+        this.stageTimeoutMs,
+      );
+    } catch (error) {
+      if (error?.code === "OMA_STAGE_TIMEOUT") {
+        try {
+          await this.client.request(
+            "turn/interrupt",
+            { threadId, turnId },
+            INTERRUPT_TIMEOUT_MS,
+          );
+        } catch (interruptError) {
+          error.message += ` Failed to interrupt timed-out turn: ${interruptError.message}`;
+        }
+      }
+      throw error;
+    }
     if (completed.turn.status !== "completed") {
       throw new Error(`Stage ${stage} failed: ${JSON.stringify(completed.turn.error)}`);
     }
@@ -400,6 +517,7 @@ export async function runWorkflow({
   adapter,
   maxStages = Infinity,
   maxRevisions = 2,
+  resumeFailed = false,
 }) {
   const statePath = path.join(runDir, "state.json");
   let state = await readState(statePath);
@@ -413,10 +531,34 @@ export async function runWorkflow({
   ) {
     throw new Error("Existing run state does not match the supplied requirement and workspace.");
   }
-  if (TERMINAL.has(state.status)) return state;
+  if (TERMINAL.has(state.status)) {
+    const failure = resumeFailed && state.status === "failed" ? recoverableFailure(state) : null;
+    if (!failure) return state;
+    const failedStage = failure.stage;
+    state.trace.push({
+      sequence: state.trace.length + 1,
+      stage: failedStage,
+      skill: stageSkill(failedStage),
+      status: "resumed",
+      failureKind: failure.kind,
+    });
+    state.status = "running";
+    state.stage = failedStage;
+    state.feedback = null;
+    state.failure = null;
+    state.updatedAt = new Date().toISOString();
+    await writeJsonAtomic(statePath, state);
+  }
 
   const requiredSkills = ["oma-delivery", "oma-plan", "oma-code", "oma-review"];
-  const discovered = await adapter.discover();
+  let discovered;
+  try {
+    if (adapter.start) await adapter.start();
+    discovered = await adapter.discover();
+  } catch (error) {
+    await persistInfrastructureFailure(state, statePath, error, state.stage);
+    throw error;
+  }
   const missing = requiredSkills.filter((name) => !discovered.includes(name));
   if (missing.length) throw new Error(`Missing skills: ${missing.join(", ")}`);
 
@@ -425,12 +567,18 @@ export async function runWorkflow({
     if (!STAGES.includes(state.stage)) throw new Error(`Unknown stage ${state.stage}`);
     const skill = stageSkill(state.stage);
     const skillPath = path.join(SKILLS_ROOT, skill, "SKILL.md");
-    const invocation = await adapter.invoke({
-      stage: state.stage,
-      skill,
-      skillPath,
-      state,
-    });
+    let invocation;
+    try {
+      invocation = await adapter.invoke({
+        stage: state.stage,
+        skill,
+        skillPath,
+        state,
+      });
+    } catch (error) {
+      await persistInfrastructureFailure(state, statePath, error, state.stage);
+      throw error;
+    }
     advance(state, invocation, maxRevisions);
     state.updatedAt = new Date().toISOString();
     await writeJsonAtomic(statePath, state);
@@ -441,22 +589,24 @@ export async function runWorkflow({
 
 async function main() {
   const values = parseArgs(process.argv.slice(2));
-  const repoRoot = path.resolve(SCRIPT_DIR, "..", "..", "..", "..");
   const runDir = requiredPath(values, "run-dir");
   const workspace = requiredPath(values, "workspace");
+  const stageTimeoutMs = positiveInteger(values, "stage-timeout-ms", DEFAULT_STAGE_TIMEOUT_MS);
+  const resumeFailed = booleanValue(values, "resume-failed");
+  const codexJs = values["codex-js"] ? requiredPath(values, "codex-js") : null;
   const requirementInput = await loadRequirementInput({
     requirement: values.requirement,
     requirementFile: values["requirement-file"],
   });
-  const adapter = new AppServerAdapter({ repoRoot, workspace });
+  const adapter = new AppServerAdapter({ workspace, stageTimeoutMs, codexJs });
   try {
-    if (adapter.start) await adapter.start();
     const state = await runWorkflow({
       runDir,
       workspace,
       ...requirementInput,
       adapter,
       maxRevisions: values["max-revisions"] ? Number(values["max-revisions"]) : 2,
+      resumeFailed,
     });
     process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
     process.exitCode = state.status === "failed" ? 2 : 0;

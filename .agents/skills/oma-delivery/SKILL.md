@@ -19,6 +19,8 @@ When `oma-discuss` returns a confirmed `requirement.md`, start or resume the aut
 node scripts/runner.mjs --run-dir <run-directory> --workspace <target-workspace> --requirement-file <run-directory>/requirement.md
 ```
 
+The Runner defaults to a 30-minute limit for each autonomous stage. Override it only when the requirement justifies a different bound with `--stage-timeout-ms <milliseconds>`. A timed-out stage is explicitly interrupted and persisted as a recoverable failed state. Resume that exact frozen run only with `--resume-failed true`; ordinary reruns of a terminal state remain no-ops. Use `--codex-js <absolute-path-to-codex.js>` only when an installed Skill must use a specific local Codex package instead of `codex` from `PATH`.
+
 Do not bypass the Runner with a direct arbitrary-prompt Codex call. The Runner owns autonomous stage transitions, persistence, retry limits, independent review threads, and terminal status. Treat the confirmed requirement and its permission envelope as immutable input.
 
 After starting, do not ask the user to approve intermediate decisions. Work inside the confirmed permission envelope. If a required action falls outside it or retries are exhausted, record a failed terminal state with evidence instead of waiting for user input.

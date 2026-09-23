@@ -7,22 +7,20 @@ description: Orchestrate a software requirement from persistent interactive disc
 
 Act only as the workflow coordinator. Do not perform requirement discovery, planning, implementation, or review yourself.
 
-Use one run directory under `<workspace>/.oma/runs/<requirement-id>` for the entire delivery.
+Every OMA run is bound one-to-one to a native Codex task. Read the current task ID from `CODEX_THREAD_ID`; if it is absent, stop before creating or adopting a run. Use `node ../oma-discuss/scripts/discuss.mjs route` with that ID before choosing a run. A bound task resumes only its bound run. An unbound task may create a run, or explicitly adopt an active run by exact run ID or unique title. Never guess among candidates. A version 1 run may be adopted only through this explicit resume path.
 
-Unless the user names a run, inspect `.oma/runs/*/discussion-state.json` before choosing one. Create a new run when none are active, resume the only `discussing` run when exactly one exists, and ask the user to select by saved title only when multiple active discussions exist. Never guess between multiple active requirements.
+When a user explicitly requests a new OMA from an already bound task, the route command returns a `nativeActions` list. Execute every action in order with the corresponding Codex app tool: `fork_thread` with the same-directory environment, `set_thread_title`, `send_message_to_thread`, then `navigate_to_codex_page`. Resolve `$child.threadId` from the fork result and require it to differ from the current `CODEX_THREAD_ID`. The child prompt contains the original new requirement and causes that child to create its own run. Do not create a second run in the bound parent task. If an action is unavailable or fails, leave the parent binding unchanged and report the failure; do not simulate independence with an App Server child thread.
 
-If `discussion-state.json` is missing or its status is `discussing`, read and follow `../oma-discuss/SKILL.md` in the current user-facing task. Never launch the discussion stage in an App Server child thread. Stop after the discussion reply unless the user explicitly confirms the requirement during that turn.
+If the selected discussion is not confirmed, read and follow `../oma-discuss/SKILL.md` in the current user-facing task. Never launch discussion in an App Server child thread.
 
-When `oma-discuss` returns a confirmed `requirement.md`, start or resume the autonomous workflow from this skill directory:
+After confirmation, pass the exact frozen input list to the Runner. Use one `--requirement-input role=<absolute-path>` argument per input. There must be exactly one `primary` or `generated` input and zero or more `supplement` inputs:
 
 ```text
-node scripts/runner.mjs --run-dir <run-directory> --workspace <target-workspace> --requirement-file <run-directory>/requirement.md
+node scripts/runner.mjs --run-dir <run-directory> --workspace <source-workspace> --requirement-input primary=<absolute-path>
 ```
 
-The Runner defaults to a 30-minute limit for each autonomous stage. Override it only when the requirement justifies a different bound with `--stage-timeout-ms <milliseconds>`. A timed-out stage is explicitly interrupted and persisted as a recoverable failed state. Resume that exact frozen run only with `--resume-failed true`; ordinary reruns of a terminal state remain no-ops. Use `--codex-js <absolute-path-to-codex.js>` only when an installed Skill must use a specific local Codex package instead of `codex` from `PATH`.
+The Runner freezes raw input bytes and hashes before creating or validating the run worktree. It then constructs the App Server adapter only for the recorded execution workspace. A resumed run must supply the same roles, paths, contents, and hashes.
 
-Do not bypass the Runner with a direct arbitrary-prompt Codex call. The Runner owns autonomous stage transitions, persistence, retry limits, independent review threads, and terminal status. Treat the confirmed requirement and its permission envelope as immutable input.
+The Runner defaults to a 30-minute limit per autonomous stage. A timed-out stage is interrupted and persisted as recoverable; resume it only with `--resume-failed true`. Do not bypass the Runner with an arbitrary prompt. Do not submit, merge, push, remove, or prune the run branch or worktree.
 
-After starting, do not ask the user to approve intermediate decisions. Work inside the confirmed permission envelope. If a required action falls outside it or retries are exhausted, record a failed terminal state with evidence instead of waiting for user input.
-
-Report the final `state.json` status and evidence. Temporary validation data may be removed after its result has been recorded.
+Report the final status, evidence, source workspace, execution workspace, worktree path, branch, and base commit.

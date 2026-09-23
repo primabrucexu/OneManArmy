@@ -29,6 +29,12 @@ npm install
 npm test
 ```
 
+需要验证真实 Codex App Server 调用链时，再运行只读的临时仓库冒烟测试：
+
+```powershell
+npm run test:live
+```
+
 在本仓库中启动 Codex 时，Codex 会直接发现 `.agents/skills/` 下的仓库级 Skills，不需要额外安装。
 
 如果要在任意软件项目中使用 OneManArmy，请在 Codex 中调用 `$skill-installer`，从本仓库一次安装以下五个 Skill：
@@ -54,23 +60,28 @@ $oma-delivery 我想讨论并实现一个需求……
 重复数据怎么处理还没决定，我们继续讨论这个。
 ```
 
-讨论中断后，重新调用 `$oma-delivery` 即可继续。只有一个未完成讨论时会自动恢复；同时存在多个讨论时，它会根据保存的标题让用户选择，不会猜测。
+每个 OMA 都与一个原生 Codex 任务和一个 run 双向唯一绑定。后续消息默认续接当前任务绑定的 run；未绑定任务只有在用户给出精确 run ID 或唯一标题时才接管旧 run。显式“新建 OMA”会创建并切换到新的原生 Codex 任务，原任务继续绑定旧 run，不会因为工作区里只有一个活动需求就自动猜测。
 
-确认需求前，可以随时修改或排除之前提出的内容。准备进入自动交付时，明确确认当前需求：
+首次理解目标并检查项目后，讨论阶段会一次性列出当前能识别的全部实质确认项。每项都有稳定编号、类别、当前理解、推荐选项、其他选项和影响；依赖或冲突关系会被持久化并在回答时校验。可以逐项回答，也可以回复“全部按推荐”。确认需求前，可以随时修改或排除之前提出的内容。准备进入自动交付时，明确确认当前需求：
 
 ```text
 确认，按当前需求执行。
 ```
 
-确认前不会进入规划或修改产品代码；确认后需求被冻结，Runner 自动完成规划、独立审核、编码、返工和最终验收，不再把实现过程中的中间决策交回用户。`$oma-delivery` 是唯一正式入口，其他四个阶段 Skill 由流程内部调用。
+如果用户指定了现有正式需求文件，OMA 直接冻结并使用它，不复制为 run 内的 `requirement.md`；原文有缺口但没有回写权限时，另存 run 内 `requirement-supplement.md` 并共同冻结。如果需求由讨论形成，OMA 会读取项目指令、模板、索引、命名规则和既有文档的内容与哈希后生成正式需求文档提案；确认前展示目标路径、完整内容和必要索引修改，确认后先建立 run worktree，再只在该 worktree 中写入正式文档。没有可识别规范或没有正式文档写入授权时，才回退到 run 内通用 `requirement.md`。
+
+确认后，Runner 先冻结每个需求输入的角色、绝对路径、原始内容和 SHA-256，再创建或恢复独立 Git worktree。规划、编码、审核和测试全部在 `executionWorkspace` 中运行；非 Git 工作区、worktree 冲突或输入漂移都会安全终止，不会退回共享目录。之后 Runner 自动完成规划、独立审核、编码、返工和最终验收，不再把实现过程中的中间决策交回用户。
 
 讨论和执行状态保存在目标项目的 `.oma/runs/<requirement-id>/`，不依赖聊天窗口保留全部上下文：
 
-- `discussion-state.json`：讨论状态和标题。
+- `discussion-state.json`：讨论状态、task/run 绑定、批量确认项和需求输入。
 - `discussion.jsonl`：逐轮保存的完整讨论历史。
 - `requirement-draft.md`：随讨论更新的当前需求草稿。
-- `requirement.md`：用户确认后冻结的正式需求。
-- `state.json`：自动交付阶段、返工轨迹和最终状态。
+- `requirement-proposal.json`：确认前展示的项目正式需求文档及索引修改提案。
+- `requirement.md`：仅在无项目规范或无正式文档写入授权时使用的通用回退文件。
+- `requirement-supplement.md`：现有正式需求不能回写时保存的确认补充内容。
+- `worktree.json`：源仓库、执行 worktree、分支和基准提交绑定。
+- `state.json`：冻结输入、自动交付阶段、返工轨迹和最终状态。
 
 ## 正式架构
 
@@ -78,10 +89,12 @@ $oma-delivery 我想讨论并实现一个需求……
 flowchart TD
     A["$oma-delivery：唯一入口"] --> B["$oma-discuss：当前前台任务"]
     B --> C["逐轮保存 discussion.jsonl 与 requirement-draft.md"]
-    C --> D{"用户唯一一次确认"}
+    C --> D{"批量确认完成且用户最终确认"}
     D -- "继续讨论" --> B
-    D -- "确认" --> E["冻结 requirement.md"]
-    E --> F["Runner：状态、循环、恢复、权限和终态"]
+    D -- "确认" --> E["现有正式文档，或 worktree 中生成正式文档，必要时回退 requirement.md"]
+    E --> O["冻结输入角色、路径、原始内容和 SHA-256"]
+    O --> P["创建或恢复独立 Git worktree"]
+    P --> F["Runner：状态、循环、恢复、权限和终态"]
 
     F --> G["$oma-plan：制定或修正方案"]
     G --> H["$oma-review：独立方案审核"]
@@ -108,14 +121,15 @@ flowchart TD
 - `$oma-plan`、`$oma-code` 和 `$oma-review` 负责确认后的专业工作。
 - Runner 不代替 Agent 思考，只负责确认后的确定性状态转换、返工循环、重试上限、独立线程、权限隔离、持久化和终态。
 - Codex App Server 是 Runner 调用阶段 Skill 的执行通道。
-- `discussion-state.json`、`discussion.jsonl`、需求文档和 `state.json` 是恢复与审计依据；流程不能依赖模型记住上一次执行位置。
+- `discussion-state.json`、`discussion.jsonl`、需求文档、`worktree.json` 和 `state.json` 是恢复与审计依据；流程不能依赖模型记住上一次执行位置。
 - 不提供绕过 Runner 的任意 Prompt 执行接口。
 
 ### 权限与终态
 
-- 讨论阶段只允许写入当前 run 目录，不允许修改产品代码。
-- 规划和审核线程使用只读权限。
-- 只有编码线程可以修改目标工作区。
+- 讨论阶段在最终确认前只允许写入当前 run 目录；正式需求文档仅在确认后写入 run 的独立 worktree。
+- 规划和审核线程使用只读权限，并且只看到 `executionWorkspace`。
+- 只有编码线程可以修改 `executionWorkspace`。
+- Runner 不自动提交、合并、推送、删除或 prune 分支和 worktree。
 - Runner 以不请求人工批准的方式启动阶段线程。
 - 超出已确认权限、超过返工上限或客观无法完成时，流程必须进入失败终态并保存证据。
 - 讨论阶段允许等待用户继续输入；需求确认并启动 Runner 后，正式终态只有成功、失败和取消。
@@ -134,8 +148,10 @@ flowchart TD
 │   ├── SKILL.md
 │   ├── agents/openai.yaml
 │   └── scripts/
+│       ├── worktree.mjs
 │       ├── runner.mjs
-│       └── runner.test.mjs
+│       ├── runner.test.mjs
+│       └── runner.live.test.mjs
 ├── oma-plan/
 │   └── SKILL.md
 ├── oma-code/
@@ -158,8 +174,6 @@ flowchart TD
 
 ## 当前差距与建设顺序
 
-1. 完善讨论恢复：补齐并发需求选择、临时输入清理和真实跨任务恢复验证。
-2. 完善 Runner：补齐取消、超时、进程异常、幂等、分类重试和权限契约。
-3. 完善阶段 Skills：固定输入输出、上下文边界、最终验收和失败证据。
-4. 验证真实交付：在受控真实仓库中无人值守完成需求、实现、测试、返工与交付。
-5. 完善分发：整理为可安装、升级和移除的 Codex 插件或 Skill 包。
+1. 完善 Runner：补齐主动取消、更多进程异常分类和超时策略。
+2. 验证真实交付：在受控真实仓库中无人值守完成需求、worktree 隔离、实现、测试、返工与交付。
+3. 完善分发：整理为可安装、升级和移除的 Codex 插件或 Skill 包。

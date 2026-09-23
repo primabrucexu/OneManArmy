@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+
+import { ensureWorktree } from "./worktree.mjs";
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(MODULE_PATH);
@@ -36,7 +39,12 @@ function parseArgs(argv) {
     if (!key?.startsWith("--") || value === undefined) {
       throw new Error(`Invalid argument near ${key ?? "<end>"}`);
     }
-    values[key.slice(2)] = value;
+    const name = key.slice(2);
+    if (name === "requirement-input") {
+      values[name] = [...(values[name] ?? []), value];
+    } else {
+      values[name] = value;
+    }
   }
   return values;
 }
@@ -138,15 +146,20 @@ async function readState(statePath) {
   }
 }
 
-function initialState(requirement, workspace, requirementFile = null) {
+function initialState(requirementSnapshot, sourceWorkspace) {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     status: "running",
     stage: "plan",
-    requirement,
-    requirementFile: requirementFile ? path.resolve(requirementFile) : null,
-    workspace,
+    requirement: requirementSnapshot.requirement,
+    requirementFile: requirementSnapshot.inputs[0]?.path ?? null,
+    requirementInputs: requirementSnapshot.inputs,
+    requirementSha256: requirementSnapshot.sha256,
+    sourceWorkspace: path.resolve(sourceWorkspace),
+    executionWorkspace: null,
+    workspace: path.resolve(sourceWorkspace),
+    worktree: null,
     planAttempt: 1,
     codeAttempt: 1,
     plan: null,
@@ -159,18 +172,54 @@ function initialState(requirement, workspace, requirementFile = null) {
   };
 }
 
-export async function loadRequirementInput({ requirement, requirementFile }) {
-  if (Boolean(requirement) === Boolean(requirementFile)) {
-    throw new Error("Provide exactly one of --requirement or --requirement-file.");
+function hash(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function validateRoles(inputs) {
+  const bases = inputs.filter((input) => ["primary", "generated"].includes(input.role));
+  if (bases.length !== 1) throw new Error("Requirement inputs need exactly one primary or generated input.");
+  if (inputs.some((input) => !["primary", "generated", "supplement"].includes(input.role))) {
+    throw new Error("Requirement input role must be primary, generated, or supplement.");
   }
-  if (requirementFile) {
-    const resolved = path.resolve(requirementFile);
-    const content = await readFile(resolved, "utf8");
-    if (!content.trim()) throw new Error("Confirmed requirement file is empty.");
-    return { requirement: content.trim(), requirementFile: resolved };
+}
+
+function parseRequirementArgument(value) {
+  const separator = value.indexOf("=");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error("--requirement-input must use role=absolute-path.");
   }
-  if (!requirement.trim()) throw new Error("Confirmed requirement is empty.");
-  return { requirement: requirement.trim(), requirementFile: null };
+  return { role: value.slice(0, separator), path: value.slice(separator + 1) };
+}
+
+export async function loadRequirementInput({ requirement, requirementFile, requirementInputs = null }) {
+  const modes = Number(Boolean(requirement)) + Number(Boolean(requirementFile)) + Number(Boolean(requirementInputs?.length));
+  if (modes !== 1) throw new Error("Provide exactly one requirement string, --requirement-file, or requirement input list.");
+  if (requirement) {
+    if (!requirement.trim()) throw new Error("Confirmed requirement is empty.");
+    const content = String(requirement);
+    return { requirement: content, requirementFile: null, inputs: [], sha256: hash(Buffer.from(content, "utf8")) };
+  }
+  const specs = requirementInputs?.length
+    ? requirementInputs.map((item) => typeof item === "string" ? parseRequirementArgument(item) : item)
+    : [{ role: "primary", path: requirementFile }];
+  validateRoles(specs);
+  const inputs = [];
+  for (const spec of specs) {
+    if (!path.isAbsolute(spec.path)) throw new Error("Requirement input paths must be absolute.");
+    const resolved = path.resolve(spec.path);
+    const bytes = await readFile(resolved);
+    const content = bytes.toString("utf8");
+    if (!content.trim()) throw new Error(`Confirmed requirement file is empty: ${resolved}`);
+    inputs.push({ role: spec.role, path: resolved, content, sha256: hash(bytes) });
+  }
+  const requirementText = inputs.map((input) => `## ${input.role}\n\n${input.content}`).join("\n\n");
+  return {
+    requirement: requirementText,
+    requirementFile: inputs[0].path,
+    inputs,
+    sha256: hash(inputs.map((input) => `${input.role}\0${input.path}\0${input.sha256}`).join("\0")),
+  };
 }
 
 function stageSkill(stage) {
@@ -180,7 +229,7 @@ function stageSkill(stage) {
 }
 
 function makePrompt(state) {
-  const shared = `Confirmed requirement:\n${state.requirement}\n\nWorkspace: ${state.workspace}`;
+  const shared = `Confirmed requirement:\n${state.requirement}\n\nExecution workspace: ${state.executionWorkspace}`;
   if (state.stage === "plan") {
     return `${shared}\n\nCreate attempt ${state.planAttempt} of the implementation plan. Review feedback: ${state.feedback ?? "none"}. Return only the requested JSON object.`;
   }
@@ -371,7 +420,7 @@ export class AppServerAdapter {
   async invoke({ stage, skill, skillPath, state }) {
     const isImplementation = stage === "code";
     const baseInstructions = isImplementation
-      ? "Implement only the supplied autonomous stage. Never ask the user a question. Return the requested JSON object."
+      ? "Implement only the supplied autonomous stage. Never ask the user a question. Do not run git commit, merge, push, worktree remove, or worktree prune. Return the requested JSON object."
       : "Complete only the supplied read-only planning or review stage. Do not modify files. Never ask the user a question. Return the requested JSON object.";
     const threadResponse = await this.client.request("thread/start", {
       cwd: this.workspace,
@@ -514,22 +563,79 @@ export async function runWorkflow({
   workspace,
   requirement,
   requirementFile = null,
-  adapter,
+  requirementInputs = null,
+  adapter = null,
+  adapterFactory = null,
+  worktreeFactory = ensureWorktree,
+  runId = path.basename(path.resolve(runDir)),
   maxStages = Infinity,
   maxRevisions = 2,
   resumeFailed = false,
 }) {
   const statePath = path.join(runDir, "state.json");
+  const sourceWorkspace = path.resolve(workspace);
   let state = await readState(statePath);
+  let supplied;
+  try {
+    supplied = await loadRequirementInput({ requirement, requirementFile, requirementInputs });
+  } catch (error) {
+    if (!state) {
+      const now = new Date().toISOString();
+      await writeJsonAtomic(statePath, {
+        version: 2,
+        status: "failed",
+        stage: "failed",
+        sourceWorkspace,
+        executionWorkspace: null,
+        workspace: sourceWorkspace,
+        requirement: null,
+        requirementFile: null,
+        requirementInputs: [],
+        requirementSha256: null,
+        worktree: null,
+        planAttempt: 1,
+        codeAttempt: 1,
+        plan: null,
+        implementation: null,
+        feedback: error.message,
+        evidence: [],
+        trace: [{ sequence: 1, stage: "preflight", skill: "oma-delivery", status: "failed", failureKind: "invalid_requirement_input" }],
+        failure: { kind: "invalid_requirement_input", recoverable: false, stage: "preflight", message: error.message, timestamp: now },
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    throw error;
+  }
   if (!state) {
-    state = initialState(requirement, workspace, requirementFile);
+    state = initialState(supplied, sourceWorkspace);
     await writeJsonAtomic(statePath, state);
-  } else if (
-    state.requirement !== requirement
-    || (state.requirementFile ?? null) !== (requirementFile ? path.resolve(requirementFile) : null)
-    || path.resolve(state.workspace) !== path.resolve(workspace)
-  ) {
-    throw new Error("Existing run state does not match the supplied requirement and workspace.");
+  } else {
+    const stateSourceWorkspace = state.sourceWorkspace ?? state.workspace;
+    if (path.resolve(stateSourceWorkspace) !== sourceWorkspace) {
+      throw new Error("Existing run state does not match the supplied source workspace.");
+    }
+    if (state.version === 1) {
+      const legacyMatches = state.requirementFile
+        ? supplied.inputs.length === 1
+          && path.resolve(state.requirementFile) === supplied.inputs[0].path
+          && state.requirement === supplied.inputs[0].content.trim()
+        : supplied.inputs.length === 0 && state.requirement === supplied.requirement.trim();
+      if (!legacyMatches) throw new Error("Legacy run state does not match the supplied requirement.");
+      state.version = 2;
+      state.sourceWorkspace = sourceWorkspace;
+      state.executionWorkspace = null;
+      state.requirement = supplied.requirement;
+      state.requirementInputs = supplied.inputs;
+      state.requirementSha256 = supplied.sha256;
+      state.worktree = null;
+      await writeJsonAtomic(statePath, state);
+    } else if (
+      state.requirementSha256 !== supplied.sha256
+      || JSON.stringify(state.requirementInputs ?? []) !== JSON.stringify(supplied.inputs)
+    ) {
+      throw new Error("Requirement inputs changed after the run was frozen. Start a new run or explicitly restart it.");
+    }
   }
   if (TERMINAL.has(state.status)) {
     const failure = resumeFailed && state.status === "failed" ? recoverableFailure(state) : null;
@@ -550,17 +656,50 @@ export async function runWorkflow({
     await writeJsonAtomic(statePath, state);
   }
 
+  let worktree;
+  try {
+    worktree = await worktreeFactory({ runDir, sourceWorkspace, runId });
+  } catch (error) {
+    await persistInfrastructureFailure(state, statePath, error, state.stage);
+    throw error;
+  }
+  if (state.worktree) {
+    for (const key of ["runKey", "branch", "baseCommit", "worktreeRoot", "executionWorkspace"]) {
+      if (state.worktree[key] !== worktree[key]) throw new Error(`Existing worktree binding changed for ${key}.`);
+    }
+  }
+  state.worktree = worktree;
+  state.executionWorkspace = path.resolve(worktree.executionWorkspace);
+  state.workspace = state.executionWorkspace;
+  state.updatedAt = new Date().toISOString();
+  await writeJsonAtomic(statePath, state);
+
+  let activeAdapter = adapter;
+  if (!activeAdapter) {
+    if (typeof adapterFactory !== "function") throw new Error("An adapter or adapterFactory is required.");
+    try {
+      activeAdapter = await adapterFactory({ workspace: state.executionWorkspace });
+    } catch (error) {
+      await persistInfrastructureFailure(state, statePath, error, state.stage);
+      throw error;
+    }
+  }
+
   const requiredSkills = ["oma-delivery", "oma-plan", "oma-code", "oma-review"];
   let discovered;
   try {
-    if (adapter.start) await adapter.start();
-    discovered = await adapter.discover();
+    if (activeAdapter.start) await activeAdapter.start();
+    discovered = await activeAdapter.discover();
   } catch (error) {
     await persistInfrastructureFailure(state, statePath, error, state.stage);
     throw error;
   }
   const missing = requiredSkills.filter((name) => !discovered.includes(name));
-  if (missing.length) throw new Error(`Missing skills: ${missing.join(", ")}`);
+  if (missing.length) {
+    const error = new Error(`Missing skills: ${missing.join(", ")}`);
+    await persistInfrastructureFailure(state, statePath, error, state.stage);
+    throw error;
+  }
 
   let executed = 0;
   while (state.status === "running" && executed < maxStages) {
@@ -569,7 +708,7 @@ export async function runWorkflow({
     const skillPath = path.join(SKILLS_ROOT, skill, "SKILL.md");
     let invocation;
     try {
-      invocation = await adapter.invoke({
+      invocation = await activeAdapter.invoke({
         stage: state.stage,
         skill,
         skillPath,
@@ -594,24 +733,25 @@ async function main() {
   const stageTimeoutMs = positiveInteger(values, "stage-timeout-ms", DEFAULT_STAGE_TIMEOUT_MS);
   const resumeFailed = booleanValue(values, "resume-failed");
   const codexJs = values["codex-js"] ? requiredPath(values, "codex-js") : null;
-  const requirementInput = await loadRequirementInput({
-    requirement: values.requirement,
-    requirementFile: values["requirement-file"],
-  });
-  const adapter = new AppServerAdapter({ workspace, stageTimeoutMs, codexJs });
+  let adapter = null;
   try {
     const state = await runWorkflow({
       runDir,
       workspace,
-      ...requirementInput,
-      adapter,
+      requirement: values.requirement,
+      requirementFile: values["requirement-file"],
+      requirementInputs: values["requirement-input"],
+      adapterFactory: ({ workspace: executionWorkspace }) => {
+        adapter = new AppServerAdapter({ workspace: executionWorkspace, stageTimeoutMs, codexJs });
+        return adapter;
+      },
       maxRevisions: values["max-revisions"] ? Number(values["max-revisions"]) : 2,
       resumeFailed,
     });
     process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
     process.exitCode = state.status === "failed" ? 2 : 0;
   } finally {
-    await adapter.close();
+    if (adapter) await adapter.close();
   }
 }
 

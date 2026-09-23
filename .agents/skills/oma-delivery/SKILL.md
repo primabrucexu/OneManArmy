@@ -23,4 +23,6 @@ The Runner freezes raw input bytes and hashes before creating or validating the 
 
 The Runner defaults to a 30-minute limit per autonomous stage. A timed-out stage is interrupted and persisted as recoverable; resume it only with `--resume-failed true`. Do not bypass the Runner with an arbitrary prompt. Do not submit, merge, push, remove, or prune the run branch or worktree.
 
+If Plan or Review returns `failed` because the frozen requirement, verified path, or current environment must change, stop the automatic run and preserve its evidence. Return to Discuss in a new native task and new run using the existing `route` action with `intent: "new"`; seed `newRequest` with the failed run ID, original objective, blocking evidence, and the decision to revisit. Execute its `nativeActions` as above. Do not alter the failed run's frozen input or silently try another technical path. A recoverable Runner infrastructure failure stays with the original run and follows the resume rule.
+
 Report the final status, evidence, source workspace, execution workspace, worktree path, branch, and base commit.

@@ -145,6 +145,63 @@ test("review can return work for automatic revision", async (t) => {
   assert.equal(state.planAttempt, 2);
 });
 
+test("review feedback survives producer revisions and a Runner resume", async (t) => {
+  const dirs = await directories(t);
+  const seen = [];
+  const adapter = new FakeAdapter();
+  adapter.invoke = async ({ stage, state }) => {
+    seen.push({ stage, planFeedback: state.lastPlanReviewFeedback, codeFeedback: state.lastCodeReviewFeedback });
+    const firstReview = (stage === "plan_review" && state.planAttempt === 1)
+      || (stage === "code_review" && state.codeAttempt === 1);
+    return {
+      threadId: `thread-${seen.length}`,
+      result: firstReview
+        ? { status: "revise", summary: "Correction needed.", feedback: `${stage} blocking issue`, evidence: [] }
+        : { status: "completed", summary: `${stage} completed.`, artifact: `${stage} artifact`, evidence: [] },
+    };
+  };
+  const partial = await runWorkflow({ ...dirs, requirement: "review history", adapter, maxStages: 3 });
+  assert.equal(partial.stage, "plan_review");
+  assert.equal(partial.lastPlanReviewFeedback, "plan_review blocking issue");
+
+  const finished = await runWorkflow({ ...dirs, requirement: "review history", adapter });
+  assert.equal(finished.status, "succeeded");
+  assert.equal(seen.filter((item) => item.stage === "plan_review")[1].planFeedback, "plan_review blocking issue");
+  assert.equal(seen.filter((item) => item.stage === "code_review")[1].codeFeedback, "code_review blocking issue");
+  assert.equal(finished.lastCodeReviewFeedback, "code_review blocking issue");
+});
+
+test("review prompts contain prior blocking feedback and the approved plan", async () => {
+  const prompts = [];
+  let sequence = 0;
+  const client = {
+    events: [],
+    request: async (method, params) => {
+      if (method === "thread/start") return { thread: { id: `thread-${++sequence}` } };
+      if (method === "turn/start") {
+        prompts.push(params.input[1].text);
+        return { turn: { id: `turn-${sequence}` } };
+      }
+      throw new Error(`Unexpected request ${method}`);
+    },
+    waitFor: async () => ({ turn: { status: "completed", items: [{ type: "agentMessage", text: JSON.stringify({ status: "completed", summary: "ok", evidence: [], feedback: null, artifact: null }) }] } }),
+  };
+  const adapter = new AppServerAdapter({ workspace: "C:\\workspace", client });
+  const state = {
+    requirement: "frozen requirement", executionWorkspace: "C:\\workspace",
+    plan: { artifact: "approved full plan", summary: "plan summary" },
+    implementation: { summary: "implementation report" },
+    lastPlanReviewFeedback: "plan blocker", lastCodeReviewFeedback: "code blocker",
+  };
+  for (const stage of ["plan_review", "code", "code_review"]) {
+    await adapter.invoke({ stage, skill: "oma-review", skillPath: "skill", state: { ...state, stage } });
+  }
+  assert.match(prompts[0], /Previous plan review blocking feedback: plan blocker/);
+  assert.match(prompts[1], /Implement this reviewed plan:\napproved full plan/);
+  assert.match(prompts[2], /Approved plan:\napproved full plan/);
+  assert.match(prompts[2], /Previous code review blocking feedback: code blocker/);
+});
+
 test("persisted state resumes without repeating a completed stage", async (t) => {
   const dirs = await directories(t);
   const requirement = "validate resume";

@@ -165,6 +165,8 @@ function initialState(requirementSnapshot, sourceWorkspace) {
     plan: null,
     implementation: null,
     feedback: null,
+    lastPlanReviewFeedback: null,
+    lastCodeReviewFeedback: null,
     evidence: [],
     trace: [],
     createdAt: now,
@@ -234,12 +236,12 @@ function makePrompt(state) {
     return `${shared}\n\nCreate attempt ${state.planAttempt} of the implementation plan. Review feedback: ${state.feedback ?? "none"}. Return only the requested JSON object.`;
   }
   if (state.stage === "plan_review") {
-    return `${shared}\n\nIndependently review this plan:\n${state.plan?.artifact ?? state.plan?.summary ?? "<missing>"}\nReturn only the requested JSON object.`;
+    return `${shared}\n\nIndependently review this plan:\n${state.plan?.artifact ?? state.plan?.summary ?? "<missing>"}\n\nPrevious plan review blocking feedback: ${state.lastPlanReviewFeedback ?? "none"}. Return only the requested JSON object.`;
   }
   if (state.stage === "code") {
-    return `${shared}\n\nImplement this reviewed plan:\n${state.plan?.summary ?? "<missing>"}\nCorrection feedback: ${state.feedback ?? "none"}. Return only the requested JSON object.`;
+    return `${shared}\n\nImplement this reviewed plan:\n${state.plan?.artifact ?? state.plan?.summary ?? "<missing>"}\nCorrection feedback: ${state.feedback ?? "none"}. Return only the requested JSON object.`;
   }
-  return `${shared}\n\nIndependently inspect the workspace and review this implementation report:\n${state.implementation?.summary ?? "<missing>"}\nReturn only the requested JSON object.`;
+  return `${shared}\n\nApproved plan:\n${state.plan?.artifact ?? state.plan?.summary ?? "<missing>"}\n\nIndependently inspect the workspace and review this implementation report:\n${state.implementation?.summary ?? "<missing>"}\n\nPrevious code review blocking feedback: ${state.lastCodeReviewFeedback ?? "none"}. Return only the requested JSON object.`;
 }
 
 export class AppServerClient {
@@ -529,6 +531,7 @@ function advance(state, invocation, maxRevisions) {
       return;
     }
     state.feedback = result.feedback ?? result.summary;
+    state.lastPlanReviewFeedback = state.feedback;
     state.stage = "plan";
     return;
   }
@@ -555,6 +558,7 @@ function advance(state, invocation, maxRevisions) {
     return;
   }
   state.feedback = result.feedback ?? result.summary;
+  state.lastCodeReviewFeedback = state.feedback;
   state.stage = "code";
 }
 

@@ -177,3 +177,7 @@ flowchart TD
 1. 完善 Runner：补齐主动取消、更多进程异常分类和超时策略。
 2. 验证真实交付：在受控真实仓库中无人值守完成需求、worktree 隔离、实现、测试、返工与交付。
 3. 完善分发：整理为可安装、升级和移除的 Codex 插件或 Skill 包。
+
+## 优化记录
+
+- 2026-09-23：实施规划与审核质量改进，在不增加 Agent 或工作流阶段的前提下，将初步技术设想和可行性验证融入 Discuss，为 Plan 增加提交前校验，限制 Review 的阻塞意见依据，并将上一轮审核反馈传给后续 Reviewer。详见[规划与审核质量改进](docs/planning-and-review-quality-improvements.md)。

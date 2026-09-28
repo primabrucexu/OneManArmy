@@ -13,7 +13,9 @@ When a user explicitly requests a new OMA from an already bound task, the route 
 
 If the selected discussion is not confirmed, read and follow `../oma-discuss/SKILL.md` in the current user-facing task. Never launch discussion in an App Server child thread.
 
-After confirmation, pass the exact frozen input list to the Runner. Use one `--requirement-input role=<absolute-path>` argument per input. There must be exactly one `primary` or `generated` input and zero or more `supplement` inputs:
+Before starting the Runner for a newly confirmed discussion, read its saved draft and log and verify that Discuss presented the complete delivery list and the user explicitly gave final confirmation of that list. Resolved batch confirmation items alone do not authorize Plan. If final confirmation is missing, keep the handoff pending in the current user-facing task and follow Discuss's final confirmation rules. Resume already-started frozen runs under the existing resume rules.
+
+After final confirmation of the delivery list and requirement freezing, pass the exact frozen input list to the Runner. Use one `--requirement-input role=<absolute-path>` argument per input. There must be exactly one `primary` or `generated` input and zero or more `supplement` inputs:
 
 ```text
 node scripts/runner.mjs --run-dir <run-directory> --workspace <source-workspace> --requirement-input primary=<absolute-path>

@@ -10,11 +10,18 @@ import { ensureWorktree, inspectGitWorkspace, withFileLock } from "../../oma-del
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const CONFIRMATION_CATEGORIES = new Set(["scope", "business", "data", "boundary", "acceptance", "permission"]);
+const FOCUS_REMINDER_INTERVAL_TURNS = 5;
 const DEFAULT_DRAFT = `# Requirement Draft
 
 ## Goal
 
 To be discussed.
+
+## Discussion focus
+
+- Core question: To be discussed.
+- Scope and depth: To be discussed.
+- Next decision: To be discussed.
 
 ## Confirmed scope
 
@@ -242,7 +249,7 @@ export async function createDiscussion({ runDir, workspace, taskId, runId = path
   const now = new Date().toISOString();
   const state = {
     version: 2, runId: run, codexTaskId: task, status: "discussing", workspace: resolvedWorkspace, title,
-    turnCount: 0, confirmationItems: [], requirementMode: null, requirementPath: null,
+    turnCount: 0, lastFocusReminderTurn: 0, confirmationItems: [], requirementMode: null, requirementPath: null,
     requirementInputs: [], requirementSha256: null, proposal: null, worktree: null,
     createdAt: now, updatedAt: now,
   };
@@ -267,6 +274,11 @@ export async function loadDiscussion({ runDir }) {
   const log = await readOptional(files.log);
   return {
     state,
+    focusReminder: {
+      intervalTurns: FOCUS_REMINDER_INTERVAL_TURNS,
+      due: state.status === "discussing"
+        && state.turnCount + 1 - (state.lastFocusReminderTurn ?? 0) >= FOCUS_REMINDER_INTERVAL_TURNS,
+    },
     draftMarkdown: await readOptional(files.draft),
     requirementMarkdown: await readOptional(files.requirement),
     turns: log ? log.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)) : [],
@@ -274,15 +286,21 @@ export async function loadDiscussion({ runDir }) {
   };
 }
 
-export async function recordDiscussionTurn({ runDir, userMessage, assistantMessage, draftMarkdown }) {
+export async function recordDiscussionTurn({ runDir, userMessage, assistantMessage, draftMarkdown, focusReminderShown = false }) {
   const discussion = await loadDiscussion({ runDir });
   if (discussion.state.status !== "discussing") throw new Error("Confirmed discussions cannot be changed.");
   validateTurn({ userMessage, assistantMessage, draftMarkdown }, "draftMarkdown");
+  if (typeof focusReminderShown !== "boolean") throw new Error("focusReminderShown must be a boolean.");
   const now = new Date().toISOString();
   const sequence = discussion.state.turnCount + 1;
   await writeTextAtomic(discussion.files.draft, normalizeMarkdown(draftMarkdown, "draftMarkdown"));
-  await appendTurn(discussion.files.log, { sequence, type: "discussion", timestamp: now, userMessage, assistantMessage });
-  const state = { ...discussion.state, turnCount: sequence, updatedAt: now };
+  await appendTurn(discussion.files.log, { sequence, type: "discussion", timestamp: now, userMessage, assistantMessage, focusReminderShown });
+  const state = {
+    ...discussion.state,
+    turnCount: sequence,
+    lastFocusReminderTurn: focusReminderShown ? sequence : (discussion.state.lastFocusReminderTurn ?? 0),
+    updatedAt: now,
+  };
   await writeJsonAtomic(discussion.files.state, state);
   return state;
 }

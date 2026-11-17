@@ -56,6 +56,127 @@ test("records every turn while keeping only the latest structured draft", async 
   assert.match(discussion.draftMarkdown, /Exclusion: alerts/);
 });
 
+async function recordFocusTurn(runDir, focusReminderShown = false) {
+  return recordDiscussionTurn({
+    runDir,
+    userMessage: "Continue defining the import behavior.",
+    assistantMessage: focusReminderShown
+      ? "Current focus: define import behavior. Export remains outside this discussion."
+      : "The import should report invalid rows.",
+    draftMarkdown: "# Requirement Draft\n\nGoal: define import behavior.\n\nExclusion: export.",
+    focusReminderShown,
+  });
+}
+
+test("focus reminder is due before the fifth reply and stays due until shown", async (t) => {
+  const dirs = await directories(t);
+  const created = await createDiscussion({ ...dirs, taskId: "focus-periodic" });
+  assert.equal(created.lastFocusReminderTurn, 0);
+  for (let turn = 1; turn <= 5; turn += 1) {
+    const discussion = await loadDiscussion({ runDir: dirs.runDir });
+    assert.deepEqual(discussion.focusReminder, { intervalTurns: 5, due: turn === 5 });
+    await recordFocusTurn(dirs.runDir);
+  }
+  assert.equal((await loadDiscussion({ runDir: dirs.runDir })).focusReminder.due, true);
+
+  await recordFocusTurn(dirs.runDir, true);
+  const reminded = await loadDiscussion({ runDir: dirs.runDir });
+  assert.equal(reminded.focusReminder.due, false);
+  assert.equal(reminded.state.lastFocusReminderTurn, 6);
+  assert.deepEqual(reminded.turns.map((turn) => turn.focusReminderShown), [false, false, false, false, false, true]);
+});
+
+test("focus reminder at a topic boundary resets the interval across resume", async (t) => {
+  const dirs = await directories(t);
+  await createDiscussion({ ...dirs, taskId: "focus-resume" });
+  await recordFocusTurn(dirs.runDir, true);
+  await recordFocusTurn(dirs.runDir);
+  await recordFocusTurn(dirs.runDir, true);
+
+  const resumed = await createDiscussion({ ...dirs, taskId: "focus-resume" });
+  assert.equal(resumed.lastFocusReminderTurn, 3);
+  for (let turn = 4; turn <= 7; turn += 1) {
+    assert.equal((await loadDiscussion({ runDir: dirs.runDir })).focusReminder.due, false);
+    await recordFocusTurn(dirs.runDir);
+  }
+  const discussion = await loadDiscussion({ runDir: dirs.runDir });
+  assert.equal(discussion.focusReminder.due, true);
+  assert.equal(discussion.state.lastFocusReminderTurn, 3);
+  assert.match(discussion.draftMarkdown, /define import behavior/);
+});
+
+test("focus reminder counts discussion replies rather than question and read operations", async (t) => {
+  const dirs = await directories(t);
+  await createDiscussion({ ...dirs, taskId: "focus-tools" });
+  for (let turn = 0; turn < 3; turn += 1) await recordFocusTurn(dirs.runDir);
+  await setConfirmationItems({
+    runDir: dirs.runDir,
+    items: [{
+      id: "SCOPE-1",
+      category: "scope",
+      currentUnderstanding: "Only import is in scope.",
+      recommendedOption: "import-only",
+      otherOptions: ["import-and-export"],
+      impact: "Controls delivery size.",
+    }],
+  });
+  await answerConfirmationItems({ runDir: dirs.runDir, allRecommended: true });
+  for (let read = 0; read < 3; read += 1) {
+    const discussion = await loadDiscussion({ runDir: dirs.runDir });
+    assert.equal(discussion.state.turnCount, 3);
+    assert.equal(discussion.focusReminder.due, false);
+  }
+  await recordFocusTurn(dirs.runDir);
+  assert.equal((await loadDiscussion({ runDir: dirs.runDir })).focusReminder.due, true);
+});
+
+test("focus reminder handles saved discussions without reminder metadata", async (t) => {
+  const dirs = await directories(t);
+  await createDiscussion({ ...dirs, taskId: "focus-existing" });
+  for (let turn = 0; turn < 5; turn += 1) await recordFocusTurn(dirs.runDir);
+  const statePath = path.join(dirs.runDir, "discussion-state.json");
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  delete state.lastFocusReminderTurn;
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+  assert.equal((await loadDiscussion({ runDir: dirs.runDir })).focusReminder.due, true);
+  await recordFocusTurn(dirs.runDir);
+  assert.equal((await loadDiscussion({ runDir: dirs.runDir })).focusReminder.due, true);
+  await recordFocusTurn(dirs.runDir, true);
+  const reminded = await loadDiscussion({ runDir: dirs.runDir });
+  assert.equal(reminded.state.lastFocusReminderTurn, 7);
+  assert.equal(reminded.focusReminder.due, false);
+});
+
+test("focus reminder stops when the discussion has been confirmed", async (t) => {
+  const dirs = await directories(t);
+  await createDiscussion({ ...dirs, taskId: "focus-confirmed" });
+  for (let turn = 0; turn < 4; turn += 1) await recordFocusTurn(dirs.runDir);
+  assert.equal((await loadDiscussion({ runDir: dirs.runDir })).focusReminder.due, true);
+  await confirmDiscussion({
+    runDir: dirs.runDir,
+    userMessage: "Confirm the complete import delivery list.",
+    assistantMessage: "The confirmed import requirement is frozen.",
+    requirementMarkdown: "# Requirement\n\nImport rows and report invalid input. Export is excluded.",
+  });
+  const discussion = await loadDiscussion({ runDir: dirs.runDir });
+  assert.equal(discussion.state.status, "confirmed");
+  assert.equal(discussion.focusReminder.due, false);
+});
+
+test("focus reminder rejects nonboolean recording flags without changing saved discussion", async (t) => {
+  const dirs = await directories(t);
+  await createDiscussion({ ...dirs, taskId: "focus-invalid" });
+  await recordFocusTurn(dirs.runDir, true);
+  const files = ["discussion-state.json", "requirement-draft.md", "discussion.jsonl"];
+  const before = await Promise.all(files.map((file) => readFile(path.join(dirs.runDir, file), "utf8")));
+  for (const flag of ["true", null]) {
+    await assert.rejects(recordFocusTurn(dirs.runDir, flag), /focusReminderShown.*boolean/);
+  }
+  const after = await Promise.all(files.map((file) => readFile(path.join(dirs.runDir, file), "utf8")));
+  assert.deepEqual(after, before);
+});
+
 test("rejects resuming a run from a different workspace", async (t) => {
   const dirs = await directories(t);
   await createDiscussion({ ...dirs, taskId: "task-3", title: "Workspace-bound" });
